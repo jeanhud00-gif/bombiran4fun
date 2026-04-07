@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Bombardier – Désert</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a0e00; overflow: hidden; cursor: none; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+// ── AUDIO ───────────────────────────────────────────────────────
+let audioCtx     = null;
+let engineNode   = null;
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  startEngine();
+}
+
+function startEngine() {
+  const ac = audioCtx;
+
+  // Compresseur maître — évite la saturation
+  const comp = ac.createDynamicsCompressor();
+  comp.threshold.value = -8;
+  comp.knee.value      = 12;
+  comp.ratio.value     = 5;
+  comp.attack.value    = 0.005;
+  comp.release.value   = 0.3;
+  comp.connect(ac.destination);
+
+  const master = ac.createGain();
+  master.gain.value = 0.4;
+  master.connect(comp);
+
+  // ── LFO de flutter (vibration mécanique ~5 Hz) ──────────────
+  const flutterLFO   = ac.createOscillator();
+  flutterLFO.frequency.value = 5.5;
+  const flutterDepth = ac.createGain();
+  flutterDepth.gain.value = 3;
+  flutterLFO.connect(flutterDepth);
+  flutterLFO.start();
+
+  // ── COUCHE 1 : 4 moteurs légèrement désaccordés ─────────────
+  // Désaccordage = effet chorus épais comme un vrai quadrimoteur
+  const engineFreqs = [50, 52.8, 47.5, 51.6];
+  const droneFilter = ac.createBiquadFilter();
+  droneFilter.type            = 'lowpass';
+  droneFilter.frequency.value = 550;
+  droneFilter.Q.value         = 0.7;
+  const droneGain = ac.createGain();
+  droneGain.gain.value = 0.38;
+  droneFilter.connect(droneGain);
+  droneGain.connect(master);
+
+  for (const f of engineFreqs) {
+    const osc = ac.createOscillator();
+    osc.type            = 'sawtooth';
+    osc.frequency.value = f;
+    flutterDepth.connect(osc.frequency); // tremblement moteur
+    osc.connect(droneFilter);
+    osc.start();
+  }
+
+  // ── COUCHE 2 : Harmoniques (richesse tonale) ─────────────────
+  const harmFreqs = [152, 158, 205]; // ~3x la fondamentale, légèrement désaccordés
+  const harmFilter = ac.createBiquadFilter();
+  harmFilter.type            = 'bandpass';
+  harmFilter.frequency.value = 175;
+  harmFilter.Q.value         = 1.2;
+  const harmGain = ac.createGain();
+  harmGain.gain.value = 0.18;
+  harmFilter.connect(harmGain);
+  harmGain.connect(master);
+
+  for (const f of harmFreqs) {
+    const osc = ac.createOscillator();
+    osc.type            = 'sawtooth';
+    osc.frequency.value = f;
+    osc.connect(harmFilter);
+    osc.start();
+  }
+
+  // ── COUCHE 3 : Sub-bass (poids physique) ────────────────────
+  const subOsc = ac.createOscillator();
+  subOsc.type            = 'sine';
+  subOsc.frequency.value = 27;
+  const subFilter = ac.createBiquadFilter();
+  subFilter.type            = 'lowpass';
+  subFilter.frequency.value = 70;
+  const subGain = ac.createGain();
+  subGain.gain.value = 0.28;
+  subOsc.connect(subFilter);
+  subFilter.connect(subGain);
+  subGain.connect(master);
+  subOsc.start();
+
+  // ── COUCHE 4 : Bruit d'airflow (rush d'air / échappement) ───
+  const nBufLen = ac.sampleRate * 4;
+  const nBuf    = ac.createBuffer(1, nBufLen, ac.sampleRate);
+  const nData   = nBuf.getChannelData(0);
+  for (let i = 0; i < nBufLen; i++) nData[i] = Math.random() * 2 - 1;
+  const nSrc = ac.createBufferSource();
+  nSrc.buffer = nBuf;
+  nSrc.loop   = true;
+
+  const nFilter1 = ac.createBiquadFilter(); // passe-bande central
+  nFilter1.type            = 'bandpass';
+  nFilter1.frequency.value = 320;
+  nFilter1.Q.value         = 0.35;
+  const nFilter2 = ac.createBiquadFilter(); // atténue les aigus
+  nFilter2.type            = 'highshelf';
+  nFilter2.frequency.value = 1800;
+  nFilter2.gain.value      = -14;
+  const nGain = ac.createGain();
+  nGain.gain.value = 0.22;
+
+  nSrc.connect(nFilter1);
+  nFilter1.connect(nFilter2);
+  nFilter2.connect(nGain);
+  nGain.connect(master);
+  nSrc.start();
+
+  // ── COUCHE 5 : Whine de turbine (~3 kHz) ────────────────────
+  const whineOsc = ac.createOscillator();
+  whineOsc.type            = 'sine';
+  whineOsc.frequency.value = 3150;
+
+  // Vibrato rapide sur la turbine (12 Hz)
+  const wLFO      = ac.createOscillator();
+  wLFO.frequency.value = 12;
+  const wDepth    = ac.createGain();
+  wDepth.gain.value = 18;
+  wLFO.connect(wDepth);
+  wDepth.connect(whineOsc.frequency);
+
+  const whineGain = ac.createGain();
+  whineGain.gain.value = 0.022; // discret mais présent
+  whineOsc.connect(whineGain);
+  whineGain.connect(master);
+  whineOsc.start();
+  wLFO.start();
+
+  // ── COUCHE 6 : Trémolo d'amplitude lent (turbulences) ───────
+  const tremoloLFO   = ac.createOscillator();
+  tremoloLFO.frequency.value = 0.35; // ~0.35 Hz, très lent
+  const tremoloDepth = ac.createGain();
+  tremoloDepth.gain.value = 0.06; // ±6% de volume
+  const tremoloBase  = ac.createGain();
+  tremoloBase.gain.value = 1;
+  tremoloLFO.connect(tremoloDepth);
+  tremoloDepth.connect(tremoloBase.gain);
+  // Insère entre master et comp
+  master.disconnect(comp);
+  master.connect(tremoloBase);
+  tremoloBase.connect(comp);
+  tremoloLFO.start();
+
+  engineNode = master;
+}
+
+function metalClick(t, freq, decay, vol) {
+  // Générateur de son métallique : bruit tonal à décroissance rapide
+  const ac  = audioCtx;
+  const out = ac.createGain();
+  out.connect(ac.destination);
+
+  // Corps métallique : oscillateur + harmonique
+  for (const f of [freq, freq * 2.76, freq * 5.4]) {
+    const o  = ac.createOscillator();
+    const og = ac.createGain();
+    o.type = 'triangle';
+    o.frequency.value = f;
+    og.gain.setValueAtTime(vol / 3, t);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+    o.connect(og); og.connect(out);
+    o.start(t); o.stop(t + decay + 0.01);
+  }
+
+  // Transitoire de bruit (attaque percussive)
+  const bLen  = Math.floor(ac.sampleRate * 0.04);
+  const bBuf  = ac.createBuffer(1, bLen, ac.sampleRate);
+  const bData = bBuf.getChannelData(0);
+  for (let i = 0; i < bLen; i++) bData[i] = (Math.random() * 2 - 1) * (1 - i / bLen);
+  const bSrc = ac.createBufferSource();
+  bSrc.buffer = bBuf;
+  const bFilt = ac.createBiquadFilter();
+  bFilt.type = 'bandpass'; bFilt.frequency.value = freq * 3; bFilt.Q.value = 2;
+  const bg = ac.createGain();
+  bg.gain.setValueAtTime(vol * 0.6, t);
+  bg.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+  bSrc.connect(bFilt); bFilt.connect(bg); bg.connect(out);
+  bSrc.start(t); bSrc.stop(t + 0.05);
+}
+
+function playBombDrop() {
+  if (!audioCtx) return;
+  const ac = audioCtx;
+  const t  = ac.currentTime;
+
+  // 1. LOQUET DE LARGAGE — clac métallique lourd (trappe de soute)
+  metalClick(t,       180, 0.18, 0.5);   // choc principal grave
+  metalClick(t + 0.01, 620, 0.09, 0.3);  // résonance aiguë immédiate
+
+  // 2. GLISSEMENT MÉTALLIQUE — bombe qui sort sur les rails
+  const slideLen  = Math.floor(ac.sampleRate * 0.22);
+  const slideBuf  = ac.createBuffer(1, slideLen, ac.sampleRate);
+  const slideData = slideBuf.getChannelData(0);
+  for (let i = 0; i < slideLen; i++) {
+    const env = Math.sin((i / slideLen) * Math.PI); // forme en cloche
+    slideData[i] = (Math.random() * 2 - 1) * env;
+  }
+  const slideSrc  = ac.createBufferSource();
+  slideSrc.buffer = slideBuf;
+  const slideFilt = ac.createBiquadFilter();
+  slideFilt.type            = 'bandpass';
+  slideFilt.frequency.value = 2800;
+  slideFilt.Q.value         = 3.5;       // bande étroite = son de métal frottant
+  const slideGain = ac.createGain();
+  slideGain.gain.setValueAtTime(0.0, t + 0.06);
+  slideGain.gain.linearRampToValueAtTime(0.18, t + 0.14);
+  slideGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+  slideSrc.connect(slideFilt); slideFilt.connect(slideGain); slideGain.connect(ac.destination);
+  slideSrc.start(t + 0.06); slideSrc.stop(t + 0.29);
+
+  // 3. CLAC DE FIN DE COURSE — trappe qui se referme
+  metalClick(t + 0.28, 240, 0.22, 0.45);  // choc de fermeture grave
+  metalClick(t + 0.29, 890, 0.07, 0.2);   // tintement métallique aigu
+
+  // 4. RECHARGEMENT — ressort + armement suivant (0.45s après)
+  // Ressort sous tension
+  const springT = t + 0.45;
+  const sprLen  = Math.floor(ac.sampleRate * 0.15);
+  const sprBuf  = ac.createBuffer(1, sprLen, ac.sampleRate);
+  const sprData = sprBuf.getChannelData(0);
+  for (let i = 0; i < sprLen; i++) {
+    const phase = i / sprLen;
+    const freq2  = 1800 - phase * 900; // descend de 1800→900 Hz
+    sprData[i] = Math.sin(i * freq2 / ac.sampleRate * Math.PI * 2) * (1 - phase) * (Math.random() * 0.3 + 0.7);
+  }
+  const sprSrc  = ac.createBufferSource();
+  sprSrc.buffer = sprBuf;
+  const sprGain = ac.createGain();
+  sprGain.gain.setValueAtTime(0.12, springT);
+  sprGain.gain.exponentialRampToValueAtTime(0.0001, springT + 0.15);
+  sprSrc.connect(sprGain); sprGain.connect(ac.destination);
+  sprSrc.start(springT); sprSrc.stop(springT + 0.16);
+
+  // Armement suivant (double clic final)
+  metalClick(springT + 0.14, 320, 0.12, 0.35);
+  metalClick(springT + 0.16, 540, 0.06, 0.15);
+
+  // 5. SIFFLEMENT DE CHUTE — Doppler descendant
+  const whistle = ac.createOscillator();
+  whistle.type = 'sawtooth';
+  whistle.frequency.setValueAtTime(820, t + 0.08);
+  whistle.frequency.exponentialRampToValueAtTime(180, t + 0.7);
+  const wFilt = ac.createBiquadFilter();
+  wFilt.type = 'bandpass'; wFilt.frequency.value = 500; wFilt.Q.value = 0.8;
+  const wg = ac.createGain();
+  wg.gain.setValueAtTime(0.0001, t + 0.08);
+  wg.gain.linearRampToValueAtTime(0.06, t + 0.2);
+  wg.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+  whistle.connect(wFilt); wFilt.connect(wg); wg.connect(ac.destination);
+  whistle.start(t + 0.08); whistle.stop(t + 0.72);
+}
+
+function playExplosion() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+
+  // Bruit d'explosion (large spectre filtré)
+  const bLen = Math.floor(audioCtx.sampleRate * 1.6);
+  const ebuf = audioCtx.createBuffer(1, bLen, audioCtx.sampleRate);
+  const ed   = ebuf.getChannelData(0);
+  for (let i = 0; i < bLen; i++) ed[i] = Math.random() * 2 - 1;
+  const nsrc = audioCtx.createBufferSource();
+  nsrc.buffer = ebuf;
+  const ef = audioCtx.createBiquadFilter();
+  ef.type = 'lowpass';
+  ef.frequency.setValueAtTime(1800, t);
+  ef.frequency.exponentialRampToValueAtTime(80, t + 1.3);
+  const eg = audioCtx.createGain();
+  eg.gain.setValueAtTime(1.1, t);
+  eg.gain.exponentialRampToValueAtTime(0.001, t + 1.5);
+  nsrc.connect(ef); ef.connect(eg); eg.connect(audioCtx.destination);
+  nsrc.start(t); nsrc.stop(t + 1.6);
+
+  // Boum grave
+  const thud = audioCtx.createOscillator();
+  thud.type = 'sine';
+  thud.frequency.setValueAtTime(90, t);
+  thud.frequency.exponentialRampToValueAtTime(22, t + 0.5);
+  const tg = audioCtx.createGain();
+  tg.gain.setValueAtTime(1.2, t);
+  tg.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+  thud.connect(tg); tg.connect(audioCtx.destination);
+  thud.start(t); thud.stop(t + 0.55);
+
+  // Craquement aigu
+  const snap = audioCtx.createOscillator();
+  snap.type = 'sawtooth';
+  snap.frequency.setValueAtTime(400, t);
+  snap.frequency.exponentialRampToValueAtTime(60, t + 0.12);
+  const sg = audioCtx.createGain();
+  sg.gain.setValueAtTime(0.5, t);
+  sg.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  snap.connect(sg); sg.connect(audioCtx.destination);
+  snap.start(t); snap.stop(t + 0.14);
+}
+
+// ────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+canvas.width  = window.innerWidth;
+canvas.height = window.innerHeight;
+const W = canvas.width;
+const H = canvas.height;
+
+// ── TUNING ──────────────────────────────────────────────────────
+const SCROLL_SPEED  = 48;    // px/s — map remonte (avion vole vers le nord)
+const BOMB_DELAY    = 2500;  // ms avant impact
+const EXPL_RADIUS   = 58;    // px
+const AMMO_START    = 8;
+const AMMO_PER_KILL = 3;
+const BASE_SPAWN    = 3.2;   // secondes entre spawns (au début)
+const MIN_SPAWN     = 0.75;  // minimum à haute difficulté
+
+// ── HELPERS ─────────────────────────────────────────────────────
+const rnd  = (a, b) => a + Math.random() * (b - a);
+const rndi = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+const pick = arr => arr[rndi(0, arr.length - 1)];
+
+// ── TERRAIN ─────────────────────────────────────────────────────
+const VIRT_H    = H * 60;  // hauteur virtuelle de la map
+const SAND_COLS = ['#c8994a','#d4a853','#c09040','#b88038','#ddb868','#cc9e44','#c4923e'];
+
+function buildTerrain() {
+  const patches   = [];
+  const roads     = [];
+  const river     = [];
+  const towns     = [];
+
+  // Variations de sable
+  for (let i = 0; i < 700; i++) {
+    patches.push({
+      x:   rnd(-60, W + 60),
+      y:   rnd(0, VIRT_H),
+      w:   rnd(40, 320),
+      h:   rnd(25, 200),
+      col: pick(SAND_COLS),
+      a:   rnd(0.2, 0.6),
+    });
+  }
+
+  // Routes diagonales
+  for (let i = 0; i < 5; i++) {
+    const x1 = rnd(0, W);
+    roads.push({
+      x1, y1: 0,
+      x2: x1 + rnd(-W * 0.35, W * 0.35),
+      y2: VIRT_H,
+      w: rnd(3, 6),
+    });
+  }
+
+  // Rivière sinueuse (inspiration Zagros / Arvand)
+  let rx = rnd(W * 0.3, W * 0.7);
+  for (let y = 0; y <= VIRT_H; y += 35) {
+    rx += rnd(-18, 18);
+    rx  = Math.max(25, Math.min(W - 25, rx));
+    river.push({ x: rx, y });
+  }
+
+  // Villes / villages
+  const nTowns = Math.floor(VIRT_H / H * 3.5);
+  for (let t = 0; t < nTowns; t++) {
+    const cx = rnd(50, W - 50);
+    const cy = rnd(0, VIRT_H);
+    const buildings = [];
+    const n = rndi(6, 35);
+    for (let b = 0; b < n; b++) {
+      buildings.push({
+        x: cx + rnd(-100, 100),
+        y: cy + rnd(-80, 80),
+        w: rnd(6, 24),
+        h: rnd(5, 20),
+        col: pick(['#a08060','#907050','#b09070','#988060','#aa8865']),
+      });
+    }
+    towns.push(buildings);
+  }
+
+  return { patches, roads, river, towns };
+}
+
+const terrain = buildTerrain();
+
+function drawTerrain(scrollY) {
+  // Fond sableux
+  ctx.fillStyle = '#bf8936';
+  ctx.fillRect(0, 0, W, H);
+
+  // Patches de sable variés
+  for (const p of terrain.patches) {
+    const sy = p.y - scrollY;
+    if (sy + p.h < 0 || sy - p.h > H) continue;
+    ctx.globalAlpha = p.a;
+    ctx.fillStyle   = p.col;
+    ctx.fillRect(p.x - p.w / 2, sy - p.h / 2, p.w, p.h);
+  }
+  ctx.globalAlpha = 1;
+
+  // Routes
+  for (const r of terrain.roads) {
+    const slope = (r.x2 - r.x1) / VIRT_H;
+    ctx.strokeStyle = '#b8956a';
+    ctx.lineWidth   = r.w;
+    ctx.beginPath();
+    ctx.moveTo(r.x1,               -scrollY);
+    ctx.lineTo(r.x1 + slope*VIRT_H, VIRT_H - scrollY);
+    ctx.stroke();
+    // bandes latérales (épaules)
+    ctx.strokeStyle = 'rgba(160,120,70,0.3)';
+    ctx.lineWidth   = r.w + 4;
+    ctx.beginPath();
+    ctx.moveTo(r.x1,               -scrollY);
+    ctx.lineTo(r.x1 + slope*VIRT_H, VIRT_H - scrollY);
+    ctx.stroke();
+  }
+
+  // Rivière
+  ctx.strokeStyle = '#4a7a96';
+  ctx.lineWidth   = 10;
+  ctx.globalAlpha = 0.6;
+  ctx.beginPath();
+  let first = true;
+  for (const pt of terrain.river) {
+    const sy = pt.y - scrollY;
+    if (sy < -25 || sy > H + 25) { first = true; continue; }
+    if (first) { ctx.moveTo(pt.x, sy); first = false; }
+    else        ctx.lineTo(pt.x, sy);
+  }
+  ctx.stroke();
+  // reflet rivière
+  ctx.strokeStyle = 'rgba(120,180,220,0.3)';
+  ctx.lineWidth   = 3;
+  ctx.beginPath();
+  first = true;
+  for (const pt of terrain.river) {
+    const sy = pt.y - scrollY;
+    if (sy < -25 || sy > H + 25) { first = true; continue; }
+    if (first) { ctx.moveTo(pt.x + 2, sy); first = false; }
+    else        ctx.lineTo(pt.x + 2, sy);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Bâtiments des villes
+  for (const town of terrain.towns) {
+    for (const b of town) {
+      const sy = b.y - scrollY;
+      if (sy + b.h < 0 || sy > H) continue;
+      ctx.fillStyle = b.col;
+      ctx.fillRect(b.x, sy, b.w, b.h);
+      // ombre portée
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.fillRect(b.x + 2, sy + b.h, b.w, 4);
+    }
+  }
+
+  // Vignette (bords sombres comme un objectif de caméra de reco)
+  const vig = ctx.createRadialGradient(W/2, H/2, H*0.28, W/2, H/2, H*0.85);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.5)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ── CIBLES ──────────────────────────────────────────────────────
+const TARGET_TYPES = {
+  vehicle: {
+    w: 22, h: 12, spd: 62, hp: 1, pts: 20,
+    label: 'Véhicule',
+  },
+  convoy: {
+    w: 34, h: 14, spd: 24, hp: 1, pts: 10,
+    label: 'Convoi',
+    count: [2, 4],
+  },
+  tank: {
+    w: 28, h: 18, spd: 18, hp: 2, pts: 35,
+    label: 'Char',
+  },
+};
+
+function spawnTarget() {
+  const typeName = pick(Object.keys(TARGET_TYPES));
+  const type     = TARGET_TYPES[typeName];
+  const side     = rndi(0, 3);
+  const sp       = type.spd * rnd(0.8, 1.2);
+  let x, y, vx, vy;
+
+  if      (side === 0) { x = rnd(0,W); y = -40;   vx = rnd(-sp*.4,sp*.4); vy = sp; }
+  else if (side === 1) { x = W+40;     y = rnd(0,H); vx = -sp; vy = rnd(-sp*.3,sp*.3); }
+  else if (side === 2) { x = rnd(0,W); y = H+40;  vx = rnd(-sp*.4,sp*.4); vy = -sp; }
+  else                 { x = -40;      y = rnd(0,H); vx = sp; vy = rnd(-sp*.3,sp*.3); }
+
+  const angle = Math.atan2(vy, vx);
+  const count = type.count ? rndi(...type.count) : 1;
+  const units = [];
+  for (let i = 0; i < count; i++) {
+    const gap = type.w + 7;
+    units.push({
+      ox: Math.cos(angle + Math.PI) * i * gap,
+      oy: Math.sin(angle + Math.PI) * i * gap,
+    });
+  }
+
+  return {
+    typeName, ...type,
+    x, y, vx, vy,
+    hp: type.hp, maxHp: type.hp,
+    angle, units,
+    trail: [],
+  };
+}
+
+// Dessine un véhicule léger (jeep/camionnette) centré à (ox, oy), facing +X
+function drawUnitVehicle(ox, oy) {
+  const bw = 20, bh = 10;
+  // Ombre portée
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(ox - bw/2 + 1.5, oy - bh/2 + 1.5, bw, bh);
+  // Carrosserie principale
+  ctx.fillStyle = '#3d6420';
+  ctx.fillRect(ox - bw/2, oy - bh/2, bw, bh);
+  // Cabine (avant = +X)
+  ctx.fillStyle = '#2c4c18';
+  ctx.fillRect(ox - bw/2, oy - bh/2, bw * 0.38, bh);
+  // Pare-brise
+  ctx.fillStyle = 'rgba(140,195,215,0.65)';
+  ctx.fillRect(ox - bw/2 + bw * 0.36, oy - bh/2 + 1.5, 2.5, bh - 3);
+  // Reflet toit
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  ctx.fillRect(ox - bw/2 + bw*0.42, oy - bh/2 + 1, bw * 0.5, bh * 0.38);
+  // Roues (4 coins, dépassent légèrement sur Y)
+  ctx.fillStyle = '#111';
+  const wl = 5, wt = 3;
+  // Avant
+  ctx.fillRect(ox + bw/2 - wl - 1, oy - bh/2 - wt + 1, wl, wt);
+  ctx.fillRect(ox + bw/2 - wl - 1, oy + bh/2 - 1,      wl, wt);
+  // Arrière
+  ctx.fillRect(ox - bw/2 + 1,      oy - bh/2 - wt + 1, wl, wt);
+  ctx.fillRect(ox - bw/2 + 1,      oy + bh/2 - 1,      wl, wt);
+  // Détail roue (cercle foncé)
+  ctx.fillStyle = '#222';
+  for (const [rx, ry] of [
+    [ox + bw/2 - wl/2 - 1, oy - bh/2 - 1],
+    [ox + bw/2 - wl/2 - 1, oy + bh/2 + 1],
+    [ox - bw/2 + wl/2 + 1, oy - bh/2 - 1],
+    [ox - bw/2 + wl/2 + 1, oy + bh/2 + 1],
+  ]) {
+    ctx.beginPath(); ctx.arc(rx, ry, 1.5, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+// Dessine un camion de convoi centré à (ox, oy), facing +X
+function drawUnitConvoy(ox, oy) {
+  const tw = 32, th = 13;
+  const cabW = tw * 0.30, carW = tw * 0.70;
+  // Ombre
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(ox - tw/2 + 1.5, oy - th/2 + 1.5, tw, th);
+  // Benne / cargo
+  ctx.fillStyle = '#567040';
+  ctx.fillRect(ox - tw/2 + cabW, oy - th/2, carW, th);
+  // Bâche (rayures canvas)
+  ctx.fillStyle = 'rgba(70,95,45,0.6)';
+  for (let s = 0; s < 5; s++) {
+    ctx.fillRect(ox - tw/2 + cabW + carW * (s/5) + 1, oy - th/2, 2.5, th);
+  }
+  // Rebord de benne
+  ctx.strokeStyle = '#3a5028';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(ox - tw/2 + cabW, oy - th/2, carW, th);
+  // Cabine
+  ctx.fillStyle = '#3a5820';
+  ctx.fillRect(ox - tw/2, oy - th/2, cabW, th);
+  // Pare-brise cabine
+  ctx.fillStyle = 'rgba(130,185,205,0.6)';
+  ctx.fillRect(ox - tw/2 + cabW - 3, oy - th/2 + 2, 3, th - 4);
+  // Phares (2 petits points jaunes à l'avant)
+  ctx.fillStyle = '#ffe066';
+  ctx.fillRect(ox - tw/2, oy - th/2 + 1.5, 2, 2);
+  ctx.fillRect(ox - tw/2, oy + th/2 - 3.5, 2, 2);
+  // Roues (3 paires)
+  ctx.fillStyle = '#111';
+  const wl = 5, wt = 3;
+  for (const xw of [ox - tw/2 + 2, ox, ox + tw/2 - wl - 2]) {
+    ctx.fillRect(xw, oy - th/2 - wt + 1, wl, wt);
+    ctx.fillRect(xw, oy + th/2 - 1,      wl, wt);
+  }
+}
+
+// Dessine un char centré à (ox, oy), facing +X
+function drawUnitTank(ox, oy) {
+  const tw = 26, th = 18, trackW = 5;
+  const hullX = ox - tw/2 + trackW, hullW = tw - trackW * 2, hullH = th - trackW * 2;
+  // Ombre
+  ctx.fillStyle = 'rgba(0,0,0,0.38)';
+  ctx.fillRect(ox - tw/2 + 2, oy - th/2 + 2, tw, th);
+  // Chenilles gauche + droite
+  ctx.fillStyle = '#1c2416';
+  ctx.fillRect(ox - tw/2, oy - th/2,             tw, trackW);
+  ctx.fillRect(ox - tw/2, oy + th/2 - trackW,    tw, trackW);
+  // Maillons de chenille
+  ctx.fillStyle = '#2e3a22';
+  for (let i = 0; i < 8; i++) {
+    const x = ox - tw/2 + 1 + i * (tw - 2) / 8;
+    ctx.fillRect(x, oy - th/2 + 1,          2, trackW - 2);
+    ctx.fillRect(x, oy + th/2 - trackW + 1, 2, trackW - 2);
+  }
+  // Roues de chenille (petits cercles visibles sur les côtés)
+  ctx.fillStyle = '#3a4a2a';
+  for (let i = 0; i < 4; i++) {
+    const x = ox - tw/2 + 3 + i * (tw - 4) / 3.5;
+    ctx.beginPath(); ctx.arc(x, oy - th/2 + trackW/2, 2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x, oy + th/2 - trackW/2, 2, 0, Math.PI*2); ctx.fill();
+  }
+  // Coque (hull)
+  ctx.fillStyle = '#3e5430';
+  ctx.fillRect(hullX, oy - th/2 + trackW, hullW, hullH);
+  // Reflet hull
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(hullX, oy - th/2 + trackW, hullW, hullH * 0.4);
+  // Tourelle (légèrement décalée vers l'avant)
+  const tx = ox + tw * 0.06, ty = oy;
+  ctx.fillStyle = '#2e3e1e';
+  ctx.beginPath(); ctx.ellipse(tx, ty, 7.5, 6.5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#3a5028';
+  ctx.beginPath(); ctx.ellipse(tx, ty, 6, 5, 0, 0, Math.PI*2); ctx.fill();
+  // Trappe
+  ctx.fillStyle = '#1e2c12';
+  ctx.beginPath(); ctx.arc(tx, ty, 2.5, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#2a3a1a';
+  ctx.beginPath(); ctx.arc(tx - 0.5, ty - 0.5, 1.2, 0, Math.PI*2); ctx.fill();
+  // Canon
+  ctx.strokeStyle = '#161e10';
+  ctx.lineWidth   = 3;
+  ctx.lineCap     = 'round';
+  ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + tw/2 + 9, ty); ctx.stroke();
+  // Frein de bouche
+  ctx.strokeStyle = '#0e140a';
+  ctx.lineWidth   = 5;
+  ctx.beginPath(); ctx.moveTo(tx + tw/2 + 5, ty); ctx.lineTo(tx + tw/2 + 10, ty); ctx.stroke();
+  ctx.lineCap = 'butt';
+}
+
+function drawTarget(t) {
+  // Traînée de poussière (taille selon le type)
+  const dustSize = t.typeName === 'tank' ? 12 : t.typeName === 'convoy' ? 9 : 6;
+  for (let i = 0; i < t.trail.length; i++) {
+    const tr = t.trail[i];
+    const a  = (i / t.trail.length) * 0.18;
+    const s  = (i / t.trail.length) * dustSize + 2;
+    ctx.globalAlpha = a;
+    ctx.fillStyle   = '#c8a070';
+    ctx.beginPath(); ctx.arc(tr.x, tr.y, s, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.save();
+  ctx.translate(t.x, t.y);
+  ctx.rotate(t.angle);
+
+  for (const u of t.units) {
+    if      (t.typeName === 'vehicle') drawUnitVehicle(u.ox, u.oy);
+    else if (t.typeName === 'convoy')  drawUnitConvoy(u.ox, u.oy);
+    else if (t.typeName === 'tank')    drawUnitTank(u.ox, u.oy);
+  }
+
+  ctx.restore();
+
+  // Barre de vie (chars uniquement)
+  if (t.maxHp > 1) {
+    const bw = t.w;
+    ctx.fillStyle = '#500';
+    ctx.fillRect(t.x - bw/2, t.y - t.h/2 - 10, bw, 4);
+    ctx.fillStyle = '#0d0';
+    ctx.fillRect(t.x - bw/2, t.y - t.h/2 - 10, bw * (t.hp / t.maxHp), 4);
+  }
+}
+
+// ── BOMBES (INDICATEURS) ─────────────────────────────────────────
+function drawBombIndicator(b, now) {
+  const progress = (now - b.fireTime) / b.delay;  // 0 → 1
+  const rem      = 1 - progress;
+
+  // Anneau extérieur qui se rétracte
+  const outerR = 15 + rem * 55;
+  ctx.strokeStyle = `rgba(255,200,0,${0.25 + rem * 0.55})`;
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, outerR, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Anneau en tirets au rayon d'explosion
+  ctx.setLineDash([5, 5]);
+  ctx.strokeStyle = `rgba(255,80,0,${0.15 + rem * 0.25})`;
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, EXPL_RADIUS, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Croix centrale
+  const cs = 9;
+  ctx.strokeStyle = `rgba(255,210,0,${0.7 + rem * 0.3})`;
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(b.x - cs, b.y); ctx.lineTo(b.x + cs, b.y);
+  ctx.moveTo(b.x, b.y - cs); ctx.lineTo(b.x, b.y + cs);
+  ctx.stroke();
+
+  // Point central pulsant
+  const pr = 3 + Math.sin(now * 0.015) * 1.5;
+  ctx.fillStyle = `rgba(255,180,0,${0.6 + rem * 0.4})`;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, pr, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// ── EXPLOSIONS & PARTICULES ──────────────────────────────────────
+function makeExplosion(x, y) {
+  const exp   = { x, y, t: 0, dur: 900 };
+  const parts = [];
+
+  // Flash initial (très court)
+  parts.push({ x, y, vx: 0, vy: 0, life: 1, col: '#ffffff', r: EXPL_RADIUS * 1.1, isFlash: true });
+
+  // Boules de feu principales
+  for (let i = 0; i < 32; i++) {
+    const a = rnd(0, Math.PI * 2);
+    const s = rnd(40, 260);
+    parts.push({
+      x, y,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: 1,
+      col: rnd(0,1) < 0.5 ? '#ff6600' : (rnd(0,1) < 0.5 ? '#ffdd00' : '#ff3300'),
+      r: rnd(4, 12),
+    });
+  }
+  // Débris (petits carrés)
+  for (let i = 0; i < 18; i++) {
+    const a = rnd(0, Math.PI * 2);
+    const s = rnd(80, 320);
+    parts.push({
+      x, y,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: 1,
+      col: pick(['#888','#666','#444','#aa7700']),
+      r: rnd(2, 5),
+      isDebris: true,
+      rot: rnd(0, Math.PI * 2),
+      rotSpd: rnd(-8, 8),
+    });
+  }
+  // Fumée noire
+  for (let i = 0; i < 18; i++) {
+    const a = rnd(0, Math.PI * 2);
+    const s = rnd(15, 80);
+    parts.push({
+      x, y,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s - 30,
+      life: 1,
+      col: pick(['#3a3a3a','#222','#4a3a2a']),
+      r: rnd(10, 22),
+      isSmoke: true,
+    });
+  }
+
+  // Onde de choc
+  const shock = { x, y, t: 0, dur: 380, maxR: EXPL_RADIUS * 2.8 };
+
+  return { exp, parts, shock };
+}
+
+function drawShockwave(s) {
+  const p = s.t / s.dur;
+  const r = s.maxR * p;
+  const a = (1 - p) * 0.7;
+  ctx.strokeStyle = `rgba(255,220,120,${a})`;
+  ctx.lineWidth   = 3 * (1 - p) + 1;
+  ctx.beginPath();
+  ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  // Anneau de chaleur (distorsion simulée)
+  ctx.strokeStyle = `rgba(255,255,255,${a * 0.4})`;
+  ctx.lineWidth   = 8 * (1 - p);
+  ctx.beginPath();
+  ctx.arc(s.x, s.y, r * 0.85, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawExplosion(e) {
+  const p  = e.t / e.dur;
+  const a  = 1 - p;
+  const r  = EXPL_RADIUS * (0.15 + p * 0.85);
+
+  // Colonne de fumée montante
+  const smokeY = e.y - r * 0.6 * p * 3;
+  const smokeR = r * 0.5 * (0.5 + p);
+  const sg = ctx.createRadialGradient(e.x, smokeY, 0, e.x, smokeY, smokeR);
+  sg.addColorStop(0,   `rgba(60,50,40,${a * 0.55})`);
+  sg.addColorStop(0.6, `rgba(40,35,30,${a * 0.3})`);
+  sg.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = sg;
+  ctx.beginPath();
+  ctx.arc(e.x, smokeY, smokeR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Boule de feu principale
+  const g = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, r * 1.2);
+  g.addColorStop(0,    `rgba(255,255,200,${a * 0.98})`);
+  g.addColorStop(0.25, `rgba(255,220,80,${a * 0.9})`);
+  g.addColorStop(0.5,  `rgba(255,100,0,${a * 0.8})`);
+  g.addColorStop(0.78, `rgba(160,40,0,${a * 0.5})`);
+  g.addColorStop(1,    'rgba(60,15,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(e.x, e.y, r * 1.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Halo lumineux
+  if (p < 0.35) {
+    const hp = p / 0.35;
+    const hg = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, r * 2.5);
+    hg.addColorStop(0,   `rgba(255,240,120,${(1-hp) * 0.4})`);
+    hg.addColorStop(1,   'rgba(255,150,0,0)');
+    ctx.fillStyle = hg;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, r * 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ── RÉTICULE ────────────────────────────────────────────────────
+function drawReticle(x, y, now) {
+  const pulse = Math.sin(now * 0.004) * 2.5;
+  const r     = 20 + pulse;
+  const gap   = 8;
+  const arm   = 18;
+
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur  = 10;
+  ctx.strokeStyle = '#00ff88';
+  ctx.lineWidth   = 1.5;
+
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x - gap - arm, y); ctx.lineTo(x - gap, y);
+  ctx.moveTo(x + gap, y);       ctx.lineTo(x + gap + arm, y);
+  ctx.moveTo(x, y - gap - arm); ctx.lineTo(x, y - gap);
+  ctx.moveTo(x, y + gap);       ctx.lineTo(x, y + gap + arm);
+  ctx.stroke();
+
+  // Tirets diagonaux
+  ctx.globalAlpha = 0.5;
+  for (let i = 0; i < 4; i++) {
+    const ang = Math.PI / 4 + i * Math.PI / 2;
+    const r1  = r + 5, r2 = r + 13;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(ang)*r1, y + Math.sin(ang)*r1);
+    ctx.lineTo(x + Math.cos(ang)*r2, y + Math.sin(ang)*r2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Point central
+  ctx.fillStyle = '#00ff88';
+  ctx.beginPath();
+  ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+}
+
+// ── HUD ─────────────────────────────────────────────────────────
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y); ctx.arcTo(x+w, y,   x+w, y+r,   r);
+  ctx.lineTo(x+w, y+h-r); ctx.arcTo(x+w, y+h, x+w-r, y+h, r);
+  ctx.lineTo(x+r, y+h); ctx.arcTo(x, y+h, x, y+h-r,   r);
+  ctx.lineTo(x, y+r); ctx.arcTo(x, y,   x+r, y,     r);
+  ctx.closePath();
+}
+
+function drawHUD(score, ammo, activeBombs, now) {
+  const mono = '"Courier New", monospace';
+
+  // ── Score (haut gauche)
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  roundRect(10, 10, 210, 56, 5);
+  ctx.fill();
+  ctx.fillStyle = '#00ff88';
+  ctx.font = `bold 14px ${mono}`;
+  ctx.fillText(`SCORE  ${score}`, 22, 31);
+  ctx.fillStyle = '#7a9a88';
+  ctx.font = `11px ${mono}`;
+  ctx.fillText(`ALT: 12 000 m  |  CAP: NORD`, 22, 52);
+
+  // ── Munitions (haut droit)
+  const ap  = W - 220;
+  const low = ammo <= 3;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  roundRect(ap, 10, 210, 56, 5);
+  ctx.fill();
+
+  ctx.fillStyle = low ? '#ff3322' : '#ffcc00';
+  ctx.font = `bold 14px ${mono}`;
+  ctx.fillText(`MUNITIONS: ${ammo}`, ap + 12, 31);
+
+  // Icônes de munitions
+  const maxIcons = Math.min(ammo, 18);
+  for (let i = 0; i < maxIcons; i++) {
+    ctx.fillStyle = low ? '#ff3322' : '#ffcc00';
+    ctx.fillRect(ap + 12 + i * 10, 38, 6, 18);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(ap + 12 + i * 10 + 2, 38, 2, 18);
+  }
+  if (ammo > 18) {
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = `10px ${mono}`;
+    ctx.fillText(`+${ammo-18}`, ap + 12 + 18*10 + 4, 52);
+  }
+
+  // ── Bombes en transit (bas centre)
+  if (activeBombs.length > 0) {
+    const bx = W/2 - 150;
+    const by = H - 65;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    roundRect(bx, by, 300, 50, 5);
+    ctx.fill();
+
+    ctx.fillStyle = '#ff9900';
+    ctx.font = `bold 12px ${mono}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      `${activeBombs.length} BOMBE${activeBombs.length > 1 ? 'S' : ''} EN TRANSIT`,
+      W/2, by + 17
+    );
+
+    const barW   = (260 - activeBombs.length * 4) / activeBombs.length;
+    for (let i = 0; i < activeBombs.length; i++) {
+      const prog = (now - activeBombs[i].fireTime) / activeBombs[i].delay;
+      const bx2  = W/2 - 130 + i * (barW + 4);
+      ctx.fillStyle = '#333';
+      ctx.fillRect(bx2, by + 28, barW, 12);
+      const hue = 40 - prog * 40;
+      ctx.fillStyle = `hsl(${hue},100%,55%)`;
+      ctx.fillRect(bx2, by + 28, barW * prog, 12);
+    }
+    ctx.textAlign = 'left';
+  }
+
+  // ── Avertissement munitions basses
+  if (low && ammo > 0) {
+    const flash = Math.sin(now * 0.008) > 0;
+    if (flash) {
+      ctx.fillStyle = 'rgba(255,50,0,0.15)';
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+}
+
+// ── GAME OVER ────────────────────────────────────────────────────
+function drawGameOver(score) {
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(0, 0, W, H);
+
+  const mono = '"Courier New", monospace';
+  ctx.textAlign = 'center';
+
+  ctx.shadowColor = '#cc0000';
+  ctx.shadowBlur  = 30;
+  ctx.fillStyle   = '#ff2200';
+  ctx.font        = `bold 54px ${mono}`;
+  ctx.fillText('MISSION ÉCHOUÉE', W/2, H/2 - 85);
+
+  ctx.shadowBlur  = 10;
+  ctx.fillStyle   = '#ffcc00';
+  ctx.font        = `bold 38px ${mono}`;
+  ctx.fillText(`SCORE FINAL : ${score}`, W/2, H/2 - 5);
+
+  ctx.shadowBlur  = 0;
+  ctx.fillStyle   = '#778';
+  ctx.font        = `15px ${mono}`;
+  ctx.fillText('Munitions épuisées — mission terminée', W/2, H/2 + 55);
+
+  ctx.fillStyle = '#aab';
+  ctx.font      = `18px ${mono}`;
+  ctx.fillText('[ CLIC pour recommencer ]', W/2, H/2 + 92);
+
+  ctx.textAlign  = 'left';
+  ctx.shadowBlur = 0;
+}
+
+// ── ÉCRAN TITRE ──────────────────────────────────────────────────
+function drawTitle() {
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(0, 0, W, H);
+
+  const mono = '"Courier New", monospace';
+  ctx.textAlign = 'center';
+
+  ctx.shadowColor = '#ff8800';
+  ctx.shadowBlur  = 30;
+  ctx.fillStyle   = '#ffaa00';
+  ctx.font        = `bold 52px ${mono}`;
+  ctx.fillText('BOMBARDIER', W/2, H/2 - 110);
+
+  ctx.shadowBlur  = 0;
+  ctx.fillStyle   = '#cc8844';
+  ctx.font        = `16px ${mono}`;
+  ctx.fillText('Opération Désert – Haute altitude', W/2, H/2 - 65);
+
+  const lines = [
+    'SOURIS  →  Déplacer le réticule',
+    'CLIC    →  Larguer une bombe  (délai : 2.5s)',
+    'IMPACT  →  +' + AMMO_PER_KILL + ' munitions par cible détruite',
+    '0 munitions + aucune bombe en vol  →  Game Over',
+  ];
+  ctx.fillStyle = '#aac';
+  ctx.font      = `14px ${mono}`;
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], W/2, H/2 - 15 + i * 26);
+  }
+
+  ctx.fillStyle = '#fff';
+  ctx.font      = `18px ${mono}`;
+  ctx.fillText('[ CLIC pour commencer ]', W/2, H/2 + 110);
+
+  ctx.textAlign  = 'left';
+  ctx.shadowBlur = 0;
+}
+
+// ── ÉTAT DU JEU ──────────────────────────────────────────────────
+let state       = 'title';   // 'title' | 'playing' | 'gameover'
+let score_v     = 0;
+let ammo_v      = AMMO_START;
+let scrollY_v   = 0;
+let mouse       = { x: W/2, y: H/2 };
+let lastTime    = 0;
+let spawnTimer  = 2.5;
+let gameTime    = 0;
+
+let zoom       = 1;
+let zoomTarget = 1;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3.5;
+
+// Convertit coordonnées écran → espace jeu (centré sur W/2, H/2)
+function screenToGame(sx, sy) {
+  return [(sx - W/2) / zoom + W/2, (sy - H/2) / zoom + H/2];
+}
+
+let targets_v    = [];
+let bombs_v      = [];
+let explosions_v = [];
+let particles_v  = [];
+let shockwaves_v = [];
+let shake        = { dur: 0 };
+let shakeX       = 0;
+let shakeY       = 0;
+
+function resetGame() {
+  state        = 'playing';
+  score_v      = 0;
+  ammo_v       = AMMO_START;
+  scrollY_v    = 0;
+  gameTime     = 0;
+  spawnTimer   = 2.5;
+  lastTime     = 0;
+  targets_v    = [];
+  bombs_v      = [];
+  explosions_v = [];
+  particles_v  = [];
+  shockwaves_v = [];
+  shake.dur    = 0;
+  shakeX = shakeY = 0;
+  zoom       = 1;
+  zoomTarget = 1;
+}
+
+// ── BOUCLE PRINCIPALE ────────────────────────────────────────────
+function loop(now) {
+  if (!lastTime) lastTime = now;
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  // ── UPDATE ──────────────────────────────────────────────────
+  if (state === 'playing') {
+    gameTime  += dt;
+    scrollY_v += SCROLL_SPEED * dt;
+    if (scrollY_v >= VIRT_H) scrollY_v = 0;
+
+    // Spawn de cibles (difficulté croissante)
+    const interval = Math.max(MIN_SPAWN, BASE_SPAWN - gameTime * 0.025);
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      targets_v.push(spawnTarget());
+      spawnTimer = interval * rnd(0.7, 1.3);
+    }
+
+    // Mise à jour des cibles
+    for (const t of targets_v) {
+      t.trail.push({ x: t.x, y: t.y });
+      if (t.trail.length > 12) t.trail.shift();
+      t.x += t.vx * dt;
+      t.y += t.vy * dt;
+    }
+    targets_v = targets_v.filter(t =>
+      t.x > -250 && t.x < W+250 && t.y > -250 && t.y < H+250
+    );
+
+    // Détonation des bombes
+    for (let i = bombs_v.length - 1; i >= 0; i--) {
+      const b = bombs_v[i];
+      if (now - b.fireTime >= b.delay) {
+        bombs_v.splice(i, 1);
+        const { exp, parts, shock } = makeExplosion(b.x, b.y);
+        explosions_v.push(exp);
+        particles_v.push(...parts);
+        shockwaves_v.push(shock);
+        shake.dur = 320;
+        playExplosion();
+
+        for (let j = targets_v.length - 1; j >= 0; j--) {
+          const t  = targets_v[j];
+          const dx = t.x - b.x, dy = t.y - b.y;
+          if (Math.hypot(dx, dy) < EXPL_RADIUS + t.w * 0.5) {
+            t.hp--;
+            if (t.hp <= 0) {
+              score_v += t.pts;
+              ammo_v  += AMMO_PER_KILL;
+              targets_v.splice(j, 1);
+            }
+          }
+        }
+      }
+    }
+
+    // Explosions
+    for (const e of explosions_v) e.t += dt * 1000;
+    explosions_v = explosions_v.filter(e => e.t < e.dur);
+
+    // Ondes de choc
+    for (const s of shockwaves_v) s.t += dt * 1000;
+    shockwaves_v = shockwaves_v.filter(s => s.t < s.dur);
+
+    // Particules
+    for (const p of particles_v) {
+      if (!p.isFlash) {
+        p.x  += p.vx * dt;
+        p.y  += p.vy * dt;
+        p.vx *= p.isDebris ? 0.88 : 0.92;
+        p.vy *= p.isDebris ? 0.88 : 0.92;
+        if (p.isDebris) p.rot += p.rotSpd * dt;
+      }
+      p.life -= dt * (p.isFlash ? 8 : p.isSmoke ? 0.65 : 1.7);
+    }
+    particles_v = particles_v.filter(p => p.life > 0);
+
+    // Shake
+    if (shake.dur > 0) {
+      shake.dur -= dt * 1000;
+      const i = (shake.dur / 320) * 8;
+      shakeX = rnd(-i, i);
+      shakeY = rnd(-i, i);
+    } else {
+      shakeX = shakeY = 0;
+    }
+
+    // Game over
+    if (ammo_v <= 0 && bombs_v.length === 0) state = 'gameover';
+  }
+
+  // Zoom interpolation (smooth)
+  zoom += (zoomTarget - zoom) * Math.min(1, dt * 10);
+
+  // ── DRAW ────────────────────────────────────────────────────
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+  // Zoom centré sur le milieu de l'écran
+  ctx.translate(W/2, H/2);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-W/2, -H/2);
+
+  drawTerrain(scrollY_v);
+
+  // Fumée (derrière tout)
+  for (const p of particles_v) {
+    if (!p.isSmoke) continue;
+    ctx.globalAlpha = Math.max(0, p.life * 0.5);
+    ctx.fillStyle   = p.col;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, Math.max(1, p.r * (1.5 - p.life * 0.5)), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Cibles
+  for (const t of targets_v) drawTarget(t);
+
+  // Indicateurs bombes en vol
+  for (const b of bombs_v) drawBombIndicator(b, now);
+
+  // Ondes de choc
+  for (const s of shockwaves_v) drawShockwave(s);
+
+  // Explosions
+  for (const e of explosions_v) drawExplosion(e);
+
+  // Flash + feu + débris (devant tout)
+  for (const p of particles_v) {
+    if (p.isSmoke) continue;
+    const a = Math.max(0, p.life);
+    if (p.isFlash) {
+      ctx.globalAlpha = a * 0.85;
+      ctx.fillStyle   = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.isDebris) {
+      ctx.globalAlpha = a;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.col;
+      const s = Math.max(0.5, p.r * a);
+      ctx.fillRect(-s, -s * 0.5, s * 2, s);
+      ctx.restore();
+    } else {
+      ctx.globalAlpha = a * 0.9;
+      ctx.fillStyle   = p.col;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(0.5, p.r * a), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.restore(); // retire shake + zoom
+
+  // HUD & réticule toujours en coordonnées écran
+  if (state === 'playing') {
+    drawHUD(score_v, ammo_v, bombs_v, now);
+    // Indicateur de zoom
+    if (Math.abs(zoom - 1) > 0.05) {
+      const mono = '"Courier New", monospace';
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(W/2 - 45, H - 30, 90, 22);
+      ctx.fillStyle = '#00ff88';
+      ctx.font = `bold 12px ${mono}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`ZOOM  ${zoom.toFixed(1)}×`, W/2, H - 14);
+      ctx.textAlign = 'left';
+    }
+  }
+  drawReticle(mouse.x, mouse.y, now);
+
+  if (state === 'title')    drawTitle();
+  if (state === 'gameover') drawGameOver(score_v);
+
+  requestAnimationFrame(loop);
+}
+
+// ── EVENTS ──────────────────────────────────────────────────────
+canvas.addEventListener('mousemove', e => {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.15 : 0.15;
+  zoomTarget = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomTarget + delta));
+}, { passive: false });
+
+canvas.addEventListener('click', () => {
+  initAudio();
+  if (state === 'title') {
+    resetGame();
+    return;
+  }
+  if (state === 'gameover') {
+    resetGame();
+    return;
+  }
+  if (ammo_v <= 0) return;
+  ammo_v--;
+  playBombDrop();
+  const [gx, gy] = screenToGame(mouse.x, mouse.y);
+  bombs_v.push({ x: gx, y: gy, fireTime: performance.now(), delay: BOMB_DELAY });
+});
+
+// ── LANCEMENT ───────────────────────────────────────────────────
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
