@@ -325,13 +325,13 @@ const W = canvas.width;
 const H = canvas.height;
 
 // ── TUNING ──────────────────────────────────────────────────────
-const SCROLL_SPEED  = 48;    // px/s — map remonte (avion vole vers le nord)
+const SCROLL_SPEED  = 95;    // px/s — map remonte (avion vole vers le nord)
 const BOMB_DELAY    = 2500;  // ms avant impact
 const EXPL_RADIUS   = 58;    // px
 const AMMO_START    = 8;
 const AMMO_PER_KILL = 3;
-const BASE_SPAWN    = 3.2;   // secondes entre spawns (au début)
-const MIN_SPAWN     = 0.75;  // minimum à haute difficulté
+const BASE_SPAWN    = 5.5;   // secondes entre spawns (cibles rares)
+const MIN_SPAWN     = 2.2;   // minimum à haute difficulté
 
 // ── HELPERS ─────────────────────────────────────────────────────
 const rnd  = (a, b) => a + Math.random() * (b - a);
@@ -487,16 +487,16 @@ function drawTerrain(scrollY) {
 // ── CIBLES ──────────────────────────────────────────────────────
 const TARGET_TYPES = {
   vehicle: {
-    w: 22, h: 12, spd: 62, hp: 1, pts: 20,
+    w: 22, h: 12, spd: 115, hp: 1,
     label: 'Véhicule',
   },
   convoy: {
-    w: 34, h: 14, spd: 24, hp: 1, pts: 10,
+    w: 34, h: 14, spd: 52, hp: 1,
     label: 'Convoi',
     count: [2, 4],
   },
   tank: {
-    w: 28, h: 18, spd: 18, hp: 2, pts: 35,
+    w: 28, h: 18, spd: 44, hp: 1,
     label: 'Char',
   },
 };
@@ -689,14 +689,6 @@ function drawTarget(t) {
 
   ctx.restore();
 
-  // Barre de vie (chars uniquement)
-  if (t.maxHp > 1) {
-    const bw = t.w;
-    ctx.fillStyle = '#500';
-    ctx.fillRect(t.x - bw/2, t.y - t.h/2 - 10, bw, 4);
-    ctx.fillStyle = '#0d0';
-    ctx.fillRect(t.x - bw/2, t.y - t.h/2 - 10, bw * (t.hp / t.maxHp), 4);
-  }
 }
 
 // ── BOMBES (INDICATEURS) ─────────────────────────────────────────
@@ -1080,7 +1072,8 @@ let targets_v    = [];
 let bombs_v      = [];
 let explosions_v = [];
 let particles_v  = [];
-let shockwaves_v = [];
+let shockwaves_v  = [];
+let scorePopups_v = [];
 let shake        = { dur: 0 };
 let shakeX       = 0;
 let shakeY       = 0;
@@ -1097,8 +1090,9 @@ function resetGame() {
   bombs_v      = [];
   explosions_v = [];
   particles_v  = [];
-  shockwaves_v = [];
-  shake.dur    = 0;
+  shockwaves_v  = [];
+  scorePopups_v = [];
+  shake.dur     = 0;
   shakeX = shakeY = 0;
   zoom       = 1;
   zoomTarget = 1;
@@ -1151,12 +1145,11 @@ function loop(now) {
           const t  = targets_v[j];
           const dx = t.x - b.x, dy = t.y - b.y;
           if (Math.hypot(dx, dy) < EXPL_RADIUS + t.w * 0.5) {
-            t.hp--;
-            if (t.hp <= 0) {
-              score_v += t.pts;
-              ammo_v  += AMMO_PER_KILL;
-              targets_v.splice(j, 1);
-            }
+            const pts = Math.round(Math.hypot(t.vx, t.vy));
+            score_v += pts;
+            ammo_v  += AMMO_PER_KILL;
+            scorePopups_v.push({ x: t.x, y: t.y, pts, life: 1 });
+            targets_v.splice(j, 1);
           }
         }
       }
@@ -1182,6 +1175,10 @@ function loop(now) {
       p.life -= dt * (p.isFlash ? 8 : p.isSmoke ? 0.65 : 1.7);
     }
     particles_v = particles_v.filter(p => p.life > 0);
+
+    // Score popups
+    for (const p of scorePopups_v) { p.y -= 28 * dt; p.life -= dt * 1.4; }
+    scorePopups_v = scorePopups_v.filter(p => p.life > 0);
 
     // Shake
     if (shake.dur > 0) {
@@ -1259,6 +1256,23 @@ function loop(now) {
       ctx.arc(p.x, p.y, Math.max(0.5, p.r * a), 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+  ctx.globalAlpha = 1;
+
+  // Score popups (dans l'espace zoomé)
+  for (const p of scorePopups_v) {
+    const a = Math.max(0, p.life);
+    ctx.globalAlpha = a;
+    ctx.font = `bold ${Math.round(11 + p.pts / 10)}px "Courier New", monospace`;
+    ctx.textAlign = 'center';
+    // Couleur selon vitesse : lent=jaune, rapide=rouge vif
+    const hue = Math.max(0, 60 - (p.pts / 120) * 60);
+    ctx.fillStyle = `hsl(${hue},100%,65%)`;
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(`+${p.pts}`, p.x, p.y);
+    ctx.fillText(`+${p.pts}`, p.x, p.y);
+    ctx.textAlign = 'left';
   }
   ctx.globalAlpha = 1;
 
