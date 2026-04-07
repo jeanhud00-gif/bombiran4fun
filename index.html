@@ -330,8 +330,9 @@ const BOMB_DELAY    = 2500;  // ms avant impact
 const EXPL_RADIUS   = 58;    // px
 const AMMO_START    = 8;
 const AMMO_PER_KILL = 3;
-const BASE_SPAWN    = 5.5;   // secondes entre spawns (cibles rares)
-const MIN_SPAWN     = 2.2;   // minimum à haute difficulté
+const BASE_SPAWN    = 10.0;  // secondes entre spawns (cibles rares)
+const MIN_SPAWN     = 5.0;   // minimum à haute difficulté
+const MAX_TARGETS   = 4;     // jamais plus de 4 cibles à l'écran
 
 // ── HELPERS ─────────────────────────────────────────────────────
 const rnd  = (a, b) => a + Math.random() * (b - a);
@@ -1113,7 +1114,7 @@ function loop(now) {
     // Spawn de cibles (difficulté croissante)
     const interval = Math.max(MIN_SPAWN, BASE_SPAWN - gameTime * 0.025);
     spawnTimer -= dt;
-    if (spawnTimer <= 0) {
+    if (spawnTimer <= 0 && targets_v.length < MAX_TARGETS) {
       targets_v.push(spawnTarget());
       spawnTimer = interval * rnd(0.7, 1.3);
     }
